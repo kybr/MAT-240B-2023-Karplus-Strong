@@ -97,8 +97,8 @@ struct MassSpringModel {
     // interpreted as oscillator amplitude.
     //
     float acceleration = 0;
-    acceleration += -springConstant * position;  // resting length is 0
-    acceleration += -dampingCoefficient * velocity;
+
+    // XXX put code here
 
     velocity += acceleration;
     position += velocity;
@@ -127,7 +127,9 @@ struct MassSpringModel {
     // to set the velocity. What velocity would we need to have energy k /
     // 2? KE == m * v * v / 2 == k / 2. or v * v == k. so...
     //
-    velocity += sqrt(springConstant);
+
+    // XXX put code here
+
     // How might we improve on this? Consider triggering at a level
     // depending on frequency according to the Fletcher-Munson curves.
   }
@@ -135,14 +137,14 @@ struct MassSpringModel {
   void recalculate(float frequency, float decayTime, float playbackRate) {
     // sample rate is "baked into" these constants to save on per-sample
     // operations.
-    dampingCoefficient = 2 / (decayTime * playbackRate);
-    springConstant = pow(frequency * 2 * (float)M_PI / playbackRate, 2) +
-                     1 / pow(decayTime * playbackRate, 2);
-    // show();
+
+    // XXX put code here
   }
 };
 
-struct KarpusStrongModel {};
+struct KarpusStrongModel {
+  // XXX put code here
+};
 
 using namespace juce;
 
@@ -181,6 +183,7 @@ class KarplusStrong : public AudioProcessor {
       if (isnan(previous)) {
         string.reset();
       }
+
       if (timer()) {
         // printf("%f\n", previous);
         float r = 0.1 + 0.9 * Random::getSystemRandom().nextFloat();
@@ -189,6 +192,7 @@ class KarplusStrong : public AudioProcessor {
                            (float)getSampleRate());
         string.trigger();
       }
+
       left[i] = previous = string() * dbtoa(gain->get());
       right[i] = left[i];
     }
