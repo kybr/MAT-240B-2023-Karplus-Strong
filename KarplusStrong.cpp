@@ -142,8 +142,114 @@ struct MassSpringModel {
   }
 };
 
-struct KarpusStrongModel {
-  // XXX put code here
+class DelayLine : public std::vector<float> {
+  //
+  int index = 0;
+
+ public:
+  float read(float samples_ago) {
+    jassert(samples_ago < size());
+    float i = index - samples_ago;
+    if (i < 0) {
+      i += size();
+    }
+    return at((int)i);  // no linear interpolation
+  }
+
+  void write(float value) {
+    jassert(size() > 0);
+    at(index) = value;  // overwrite the oldest value
+
+    // handle the wrapping for circular buffer
+    index++;
+    if (index >= size()) index = 0;
+  }
+
+  void allocate(float seconds, float samplerate) {
+    // floor(seconds * samplerate) + 1 samples
+    resize((int)floor(seconds * samplerate) + 1);
+  }
+};
+
+class BiquadFilter {
+  // Audio EQ Cookbook
+  // http://www.musicdsp.org/files/Audio-EQ-Cookbook.txt
+
+  // x[n-1], x[n-2], y[n-1], y[n-2]
+  float x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+
+  // filter coefficients
+  float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+
+ public:
+  float operator()(float x0) {
+    // Direct Form 1, normalized...
+    float y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+    y2 = y1;
+    y1 = y0;
+    x2 = x1;
+    x1 = x0;
+    return y0;
+  }
+
+  void normalize(float a0) {
+    b0 /= a0;
+    b1 /= a0;
+    b2 /= a0;
+    a1 /= a0;
+    a2 /= a0;
+  }
+
+  void lpf(float f0, float Q, float samplerate) {
+    float w0 = 2 * float(M_PI) * f0 / samplerate;
+    float alpha = sin(w0) / (2 * Q);
+    b0 = (1 - cos(w0)) / 2;
+    b1 = 1 - cos(w0);
+    b2 = (1 - cos(w0)) / 2;
+    float a0 = 1 + alpha;
+    a1 = -2 * cos(w0);
+    a2 = 1 - alpha;
+
+    normalize(a0);
+  }
+};
+
+struct KarplusStrongModel {
+  DelayLine delay;
+  BiquadFilter filter;
+  float delayTime = 0;  // in *samples*
+  float feedback = 1;
+
+  void init(float seconds, float samplerate) {
+    delay.allocate(seconds, samplerate);
+    zero();
+  }
+
+  void configure(float hertz, float seconds, float samplerate) {
+    delayTime = samplerate / hertz;
+    filter.lpf(1000, 0.4, samplerate);
+  }
+
+  float trigger() {
+    static int random = 0;
+    for (int i = 0; i < delay.size(); ++i) {
+      random += 12345;
+      random *= 1103515245;
+      delay[i] = random / 2147483647.0f;
+    }
+  }
+
+  float zero() {
+    for (int i = 0; i < delay.size(); ++i) {
+      delay[i] = 0;
+    }
+  }
+
+  float operator()() {
+    float v = filter(delay.read(delayTime));
+    delay.write(v * feedback);
+    return v;
+  }
 };
 
 using namespace juce;
@@ -151,8 +257,15 @@ using namespace juce;
 class KarplusStrong : public AudioProcessor {
   AudioParameterFloat* gain;
   AudioParameterFloat* note;
+  AudioParameterFloat* rate;
+  AudioParameterFloat* cutoff;
+  AudioParameterFloat* resonance;
+  AudioParameterFloat* feedback;
+
   BooleanOscillator timer;
-  MassSpringModel string;
+  // MassSpringModel string;
+  KarplusStrongModel string;
+
   /// add parameters here ///////////////////////////////////////////////////
 
  public:
@@ -166,6 +279,19 @@ class KarplusStrong : public AudioProcessor {
     addParameter(
         note = new AudioParameterFloat(
             {"note", 1}, "Note", NormalisableRange<float>(-2, 129, 0.01f), 40));
+    addParameter(
+        rate = new AudioParameterFloat(
+            {"rate", 1}, "Rate", NormalisableRange<float>(-40, 40, 0.01f), -4));
+    addParameter(cutoff = new AudioParameterFloat(
+                     {"cutoff", 1}, "Cutoff",
+                     NormalisableRange<float>(-2, 129, 0.01f), 100));
+    addParameter(resonance = new AudioParameterFloat(
+                     {"resonance", 1}, "Resonance",
+                     NormalisableRange<float>(0.00001, 4, 0.01f), 0.6));
+    addParameter(feedback = new AudioParameterFloat(
+                     {"feedback", 1}, "Feedback",
+                     NormalisableRange<float>(0.0, 2.0, 0.01f), 1.0));
+
     /// add parameters here /////////////////////////////////////////////
 
     // XXX juce::getSampleRate() is not valid here
@@ -179,17 +305,12 @@ class KarplusStrong : public AudioProcessor {
     auto left = buffer.getWritePointer(0, 0);
     auto right = buffer.getWritePointer(1, 0);
 
+    timer.frequency(mtof(rate->get()), getSampleRate());
+    string.feedback = feedback->get();
+    string.filter.lpf(mtof(cutoff->get()), resonance->get(), getSampleRate());
     for (int i = 0; i < buffer.getNumSamples(); ++i) {
-      if (isnan(previous)) {
-        string.reset();
-      }
-
       if (timer()) {
-        // printf("%f\n", previous);
-        float r = 0.1 + 0.9 * Random::getSystemRandom().nextFloat();
-        timer.period(r / 2 + 0.5f, (float)getSampleRate());
-        string.recalculate(mtof(note->get()), r * r * r,
-                           (float)getSampleRate());
+        string.configure(mtof(note->get()), 1, getSampleRate());
         string.trigger();
       }
 
@@ -204,8 +325,9 @@ class KarplusStrong : public AudioProcessor {
   // }
 
   /// start and shutdown callbacks///////////////////////////////////////////
-  void prepareToPlay(double, int) override {
+  void prepareToPlay(double samplerate, int) override {
     // XXX when does this get called? seems to not get called in stand-alone
+    string.init(1, samplerate);
   }
   void releaseResources() override {}
 
