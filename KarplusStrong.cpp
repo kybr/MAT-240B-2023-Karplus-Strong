@@ -97,8 +97,8 @@ struct MassSpringModel {
     // interpreted as oscillator amplitude.
     //
     float acceleration = 0;
-
-    // XXX put code here
+    acceleration += -springConstant * position;  // resting length is 0
+    acceleration += -dampingCoefficient * velocity;
 
     velocity += acceleration;
     position += velocity;
@@ -128,8 +128,9 @@ struct MassSpringModel {
     // 2? KE == m * v * v / 2 == k / 2. or v * v == k. so...
     //
 
-    // XXX put code here
+    velocity += sqrt(springConstant);
 
+    //
     // How might we improve on this? Consider triggering at a level
     // depending on frequency according to the Fletcher-Munson curves.
   }
@@ -137,8 +138,10 @@ struct MassSpringModel {
   void recalculate(float frequency, float decayTime, float playbackRate) {
     // sample rate is "baked into" these constants to save on per-sample
     // operations.
-
-    // XXX put code here
+    dampingCoefficient = 2 / (decayTime * playbackRate);
+    springConstant = pow(frequency * 2 * (float)M_PI / playbackRate, 2) +
+                     1 / pow(decayTime * playbackRate, 2);
+    // show();
   }
 };
 
@@ -261,9 +264,10 @@ class KarplusStrong : public AudioProcessor {
   AudioParameterFloat* cutoff;
   AudioParameterFloat* resonance;
   AudioParameterFloat* feedback;
+  AudioParameterBool* use_spring;
 
   BooleanOscillator timer;
-  // MassSpringModel string;
+  MassSpringModel spring;
   KarplusStrongModel string;
 
   /// add parameters here ///////////////////////////////////////////////////
@@ -291,6 +295,8 @@ class KarplusStrong : public AudioProcessor {
     addParameter(feedback = new AudioParameterFloat(
                      {"feedback", 1}, "Feedback",
                      NormalisableRange<float>(0.0, 2.0, 0.01f), 1.0));
+    addParameter(use_spring = new juce::AudioParameterBool(
+                     "use_spring", "Use Mass-Spring", false));
 
     /// add parameters here /////////////////////////////////////////////
 
@@ -312,9 +318,16 @@ class KarplusStrong : public AudioProcessor {
       if (timer()) {
         string.configure(mtof(note->get()), 1, getSampleRate());
         string.trigger();
+
+        spring.recalculate(mtof(note->get()), 2 / mtof(rate->get()),
+                           (float)getSampleRate());
+        spring.trigger();
       }
 
-      left[i] = previous = string() * dbtoa(gain->get());
+      if (use_spring->get())
+        left[i] = previous = spring() * dbtoa(gain->get());
+      else
+        left[i] = previous = string() * dbtoa(gain->get());
       right[i] = left[i];
     }
   }
